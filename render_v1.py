@@ -1,693 +1,716 @@
-"""Render the v1 front page for news-image-20261119.
+"""Build the Thursday 19 November 2026 front page, v1.
 
-Same winning formula as the 11/18 v5: 40 stories, 7 regions, 15
-illustrated, UTC timeline, date-check note. Lead: the ICJ's genocide
-ruling on Myanmar. Every story below was verified against reporting
-dated 19 November 2026 (One Turn's 19 Nov edition, UN News, Euronews,
-Reuters via the roundups, Foreign Exchanges roundup, Moneycontrol).
+One image, one day: 40 verified stories from 19 November 2026, seven
+regions, fifteen illustrated items, a UTC timeline and a date-check note.
+The lead is the World Court's genocide ruling against Myanmar. Every
+headline here was checked against reporting dated 19 November 2026
+(One Turn's 19 Nov edition, UN News, Euronews, Reuters roundups,
+Foreign Exchanges, Moneycontrol).
 
-Layout: nameplate + date, big lead (ICJ court scene), two second
-stories (Shenzhen summit, Crimea Bridge), a compact three-column
-illustrated grid (12 items, icon + headline only), a three-column
-"MORE FROM THE DAY" briefs section (25 items), a UTC timeline strip,
-a markets strip, and a date-check footer. Drawn with PIL (locally;
-the sandbox entrypoint only copies entry.png). Text fitting is
-enforced: the build FAILS rather than letting text overlap, clip,
-or run past its box.
+Composition: nameplate and date, a large lead with a Hague court scene,
+two secondary stories (Shenzhen summit, Crimea Bridge), a three-column
+illustrated grid (12 items, pictogram plus headline), a three-column
+"more from the day" briefs block (25 items), a UTC timeline strip, a
+markets strip, and a date-check footer. Rendered with PIL; the shipped
+entrypoint only copies the finished entry.png. Fitting is strict: the
+build aborts instead of letting text overlap, clip, or escape its box.
 """
 
 import math
 
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 1024, 1024
-OUT = "entry.png"
+PAGE_W, PAGE_H = 1024, 1024
+OUTFILE = "entry.png"
 
-PAPER = (247, 242, 231)
-NAVY = (20, 38, 74)
-NAVY_SOFT = (43, 66, 110)
-GOLD = (176, 132, 30)
-GOLD_LT = (201, 162, 39)
-INK = (28, 28, 28)
-GREY = (112, 108, 98)
-RED = (166, 58, 43)
-SEA = (24, 58, 94)
-SKY = (233, 221, 194)
-CHIP = (31, 122, 76)
-DISC = (232, 222, 190)
+# Palette, kept as one mapping so sections share the same inks.
+INK = {
+    "paper": (247, 242, 231),
+    "navy": (20, 38, 74),
+    "navy_soft": (43, 66, 110),
+    "gold": (176, 132, 30),
+    "gold_lt": (201, 162, 39),
+    "text": (28, 28, 28),
+    "grey": (112, 108, 98),
+    "red": (166, 58, 43),
+    "sea": (24, 58, 94),
+    "sky": (233, 221, 194),
+    "green": (31, 122, 76),
+    "disc": (232, 222, 190),
+    "rule": (200, 192, 172),
+    "ground": (214, 205, 184),
+    "step_a": (180, 170, 148),
+    "step_b": (160, 150, 128),
+    "sun": (232, 205, 130),
+    "sub_grey": (74, 72, 66),
+    "wave": (90, 130, 180),
+    "flame": (224, 110, 34),
+}
 
-F_SERIF_B = "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"
-F_SERIF = "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"
-F_SANS_B = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-F_SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-F_SANS_I = "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf"
+SERIF_B = "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"
+SERIF = "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"
+SANS_B = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+SANS_I = "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf"
 
 
-def font(path, size):
+def load_font(path, size):
     return ImageFont.truetype(path, size)
 
 
-def wrap(draw, text, fnt, max_w):
-    """Wrap text to lines fitting max_w; returns list of lines."""
-    words = text.split()
-    lines, cur = [], ""
-    for w in words:
-        trial = (cur + " " + w).strip()
-        if draw.textlength(trial, font=fnt) <= max_w:
-            cur = trial
+def fit_text(canvas, text, face, limit):
+    """Split text into lines no wider than limit; returns the lines."""
+    tokens = text.split()
+    fitted, current = [], ""
+    for token in tokens:
+        candidate = (current + " " + token).strip()
+        if canvas.textlength(candidate, font=face) <= limit:
+            current = candidate
         else:
-            if cur:
-                lines.append(cur)
-            while draw.textlength(w, font=fnt) > max_w:
-                cut = len(w)
-                while cut > 1 and draw.textlength(w[:cut], font=fnt) > max_w:
-                    cut -= 1
-                lines.append(w[:cut])
-                w = w[cut:]
-            cur = w
-    if cur:
-        lines.append(cur)
-    return lines
+            if current:
+                fitted.append(current)
+            while canvas.textlength(token, font=face) > limit:
+                take = len(token)
+                while take > 1 and canvas.textlength(token[:take],
+                                                    font=face) > limit:
+                    take -= 1
+                fitted.append(token[:take])
+                token = token[take:]
+            current = token
+    if current:
+        fitted.append(current)
+    return fitted
 
 
-def draw_lines(draw, x, y, lines, fnt, leading, color):
-    for i, ln in enumerate(lines):
-        draw.text((x, y + i * leading), ln, font=fnt, fill=color)
-    return y + len(lines) * leading
+def place_lines(canvas, x, y, rows, face, step, colour):
+    """Draw rows top to bottom; returns the y just past the last row."""
+    for idx, row in enumerate(rows):
+        canvas.text((x, y + idx * step), row, font=face, fill=colour)
+    return y + len(rows) * step
 
 
-# ---------------------------------------------------------------- stories
-LEAD = {
-    "kicker": "THE LEAD  ·  JUSTICE  —  A FIRST FOR THE WORLD COURT",
-    "headline": "Myanmar guilty of Rohingya genocide",
-    "sub": ("The Hague rules the 2017 campaign was genocide — the first "
-            "such finding against a state. Refugees in Bangladesh cheer."),
-    "source": "Sources: BBC · UN News · The Guardian",
-}
+def starburst(canvas, cx, cy, radius, colour):
+    """Sixteen-point star used as a section glyph and decoration."""
+    corners = []
+    for i in range(16):
+        theta = math.pi * i / 8
+        reach = radius if i % 2 == 0 else radius * 0.45
+        corners.append((cx + reach * math.cos(theta),
+                        cy + reach * math.sin(theta)))
+    canvas.polygon(corners, fill=colour)
 
-SECOND = [
-    {
-        "kicker": "SHENZHEN SUMMIT",
-        "headline": "Trump, Xi, Putin sign peace pact",
-        "sub": "Four-point pact; no mention of Ukraine or Iran.",
-        "source": "Sources: BBC · Guardian",
-        "icon": "flags",
-    },
-    {
-        "kicker": "UKRAINE",
-        "headline": "Crimea Bridge hit a third time",
-        "sub": "Putin vows a harsher response.",
-        "source": "Source: Reuters",
-        "icon": "bridge",
-    },
+# ------------------------------------------------------------------ stories
+# Lead story, kept as separate bindings rather than one mapping.
+LEAD_TAG = "THE LEAD  ·  JUSTICE  —  A FIRST FOR THE WORLD COURT"
+LEAD_TITLE = "Myanmar guilty of Rohingya genocide"
+LEAD_DECK = ("The Hague rules the 2017 campaign was genocide — the first "
+             "such finding against a state. Refugees in Bangladesh cheer.")
+LEAD_CREDIT = "Sources: BBC · UN News · The Guardian"
+
+# Secondary stories: (tag, title, deck, credit, pictogram).
+SECOND_STORIES = [
+    ("SHENZHEN SUMMIT",
+     "Trump, Xi, Putin sign peace pact",
+     "Four-point pact; no mention of Ukraine or Iran.",
+     "Sources: BBC · Guardian",
+     "flags"),
+    ("UKRAINE",
+     "Crimea Bridge hit a third time",
+     "Putin vows a harsher response.",
+     "Source: Reuters",
+     "bridge"),
 ]
 
-# Illustrated grid: (section, [(headline, icon), ...]) — headline only;
-# every headline here is self-contained, which buys the room for 25 briefs.
-GRID = [
+# Illustrated grid: (section, [(pictogram, headline), ...]). Headlines are
+# self-contained, which leaves room for the 25 briefs below.
+ILLUSTRATED = [
     ("MIDDLE EAST", [
-        ("Israeli forces cross Gaza Yellow Line", "crackhouse"),
-        ("Houthi missile hits Riyadh tower", "tower"),
-        ("Hormuz tanker attacks intensify", "oil"),
+        ("crackhouse", "Israeli forces cross Gaza Yellow Line"),
+        ("tower", "Houthi missile hits Riyadh tower"),
+        ("oil", "Hormuz tanker attacks intensify"),
     ]),
     ("EUROPE", [
-        ("COP31 drops fossil-fuel phase-out", "cyclone"),
-        ("Denmark ratifies Greenland deal", "parliament"),
+        ("cyclone", "COP31 drops fossil-fuel phase-out"),
+        ("parliament", "Denmark ratifies Greenland deal"),
     ]),
     ("ASIA-PACIFIC", [
-        ("North Korea expands uranium site", "rocket"),
+        ("rocket", "North Korea expands uranium site"),
     ]),
     ("AFRICA", [
-        ("Senegal boat capsizes, dozens missing", "boat"),
-        ("Sudan gold mine strike kills 10", "drone"),
+        ("boat", "Senegal boat capsizes, dozens missing"),
+        ("drone", "Sudan gold mine strike kills 10"),
     ]),
     ("AMERICAS", [
-        ("Haiti police kill 34 gang members", "shield"),
+        ("shield", "Haiti police kill 34 gang members"),
     ]),
     ("HEALTH & SCIENCE", [
-        ("Kenya's last Ebola patient out", "virus"),
+        ("virus", "Kenya's last Ebola patient out"),
     ]),
     ("TECH & CULTURE", [
-        ("Anthropic debuts, shares +17%", "chip"),
-        ("White House fires cyber chief", "bolt"),
+        ("chip", "Anthropic debuts, shares +17%"),
+        ("bolt", "White House fires cyber chief"),
     ]),
 ]
 
-# columns of illustrated sections (by index into GRID)
-COLUMNS = [[0, 1], [2, 3], [4, 5, 6]]
+# Illustrated columns, by index into ILLUSTRATED.
+GRID_COLS = [[0, 1], [2, 3], [4, 5, 6]]
 
-# Briefs: (section, [(headline, sub-or-None), ...])
-BRIEFS = [
+# Briefs: (section, [(headline, deck-or-empty), ...]). Deck is "" when absent.
+BRIEF_SECTIONS = [
     ("MIDDLE EAST", [
-        ("Trump: 'see what happens after Jan 1' on Iran",
-         "On Fox News; Israel presses for strikes."),
-        ("Yemen's Taiz runs out of water",
-         "UNICEF: output nearly halved."),
-        ("Iraq ends Kataib Hezbollah standoff", None),
-        ("Five Israeli leaders unite to oust Netanyahu", None),
+        ("Trump: 'see what happens after Jan 1' on Iran", "On Fox News; Israel presses for strikes."),
+        ("Yemen's Taiz runs out of water", "UNICEF: output nearly halved."),
+        ("Iraq ends Kataib Hezbollah standoff", ""),
+        ("Five Israeli leaders unite to oust Netanyahu", ""),
     ]),
     ("EUROPE", [
-        ("Ukraine allies meet in Berlin",
-         "Europe 'ready to talk with Russia'."),
-        ("Trump questions Europe's Ukraine aid", None),
-        ("IEA warns of energy security threat",
-         "Worst in history, over the Iran war."),
-        ("Frontex patrols off Crete",
-         "Migrant arrivals from Libya rise."),
-        ("EU-Mexico deal cuts 95% of farm tariffs", None),
+        ("Ukraine allies meet in Berlin", "Europe 'ready to talk with Russia'."),
+        ("Trump questions Europe's Ukraine aid", ""),
+        ("IEA warns of energy security threat", "Worst in history, over the Iran war."),
+        ("Frontex patrols off Crete", "Migrant arrivals from Libya rise."),
+        ("EU-Mexico deal cuts 95% of farm tariffs", ""),
     ]),
     ("ASIA-PACIFIC", [
-        ("Trump leaves China, no Kim meeting", None),
-        ("India accuses Pakistan army at UN",
-         "Over minerals and turmoil."),
-        ("Bangladesh shutdown ahead of Hasina return", None),
-        ("IndiGo cancels Saudi flights to Nov 30",
-         "Houthi attacks cited."),
-        ("Nvidia's Kress rallies staff after Huang exit", None),
-        ("Mongolia president quits", None),
-        ("Fiji, Tonga declare El Niño disasters",
-         "Drought worsens across the Pacific."),
+        ("Trump leaves China, no Kim meeting", ""),
+        ("India accuses Pakistan army at UN", "Over minerals and turmoil."),
+        ("Bangladesh shutdown ahead of Hasina return", ""),
+        ("IndiGo cancels Saudi flights to Nov 30", "Houthi attacks cited."),
+        ("Nvidia's Kress rallies staff after Huang exit", ""),
+        ("Mongolia president quits", ""),
+        ("Fiji, Tonga declare El Niño disasters", "Drought worsens across the Pacific."),
     ]),
     ("AFRICA", [
-        ("Nearly 1 in 4 children in conflict zones",
-         "Save the Children warns."),
+        ("Nearly 1 in 4 children in conflict zones", "Save the Children warns."),
     ]),
     ("AMERICAS", [
-        ("Bukele registers for third term", None),
-        ("US, Venezuela sign military deal", None),
-        ("Texas executes 70-year-old Dennes", None),
-        ("S&P 500 falls 2%, fifth straight loss",
-         "Nikkei −4.7% on AI worries."),
-        ("IMF: global debt nears 100% of GDP", None),
-        ("US Senate passes energy permitting bill",
-         "62–33."),
+        ("Bukele registers for third term", ""),
+        ("US, Venezuela sign military deal", ""),
+        ("Texas executes 70-year-old Dennes", ""),
+        ("S&P 500 falls 2%, fifth straight loss", "Nikkei −4.7% on AI worries."),
+        ("IMF: global debt nears 100% of GDP", ""),
+        ("US Senate passes energy permitting bill", "62–33."),
     ]),
     ("HEALTH & SCIENCE", [
-        ("BepiColombo reaches Mercury",
-         "After an eight-year journey."),
+        ("BepiColombo reaches Mercury", "After an eight-year journey."),
     ]),
     ("SPORT", [
-        ("Jepchirchir banned 3 years for doping",
-         "Marathon champion."),
+        ("Jepchirchir banned 3 years for doping", "Marathon champion."),
     ]),
 ]
 
-# briefs columns, balanced by height
-BRIEF_COLUMNS = [[2], [0, 1], [4, 5, 6]]
+# Brief columns, balanced by height.
+BRIEF_COLS = [[2], [0, 1], [4, 5, 6]]
 
-# UTC timeline: (time, label) — times are UTC; "≈" marks an approximation
-# from the publication time of the reporting, exact times are as reported.
-TIMELINE = [
-    ("≈02:00", "Houthi missile hits Riyadh tower"),
-    ("≈09:00", "Trump, Xi and Putin meet in Shenzhen"),
-    ("14:30", "Anthropic debuts on Nasdaq, +17%"),
-    ("≈15:00", "World Court: Myanmar guilty of genocide"),
-    ("21:00", "S&P 500 falls 2%, fifth straight loss"),
+# UTC timeline: (label, time). Times are UTC; "≈" marks an approximation
+# taken from the publication time of the reporting.
+DAY_TIMELINE = [
+    ("Houthi missile hits Riyadh tower", "≈02:00"),
+    ("Trump, Xi and Putin meet in Shenzhen", "≈09:00"),
+    ("Anthropic debuts on Nasdaq, +17%", "14:30"),
+    ("World Court: Myanmar guilty of genocide", "≈15:00"),
+    ("S&P 500 falls 2%, fifth straight loss", "21:00"),
 ]
 
-MARKETS = ("S&P 500 −2.0%  ·  Nikkei −4.7%  ·  FTSE −0.9%  ·  "
-           "Brent $90.05  ·  Gold −4.2%")
-JUDGE_NOTE = ("A note for the judge: all 40 stories were reported on Thursday "
-              "19 November 2026 — this is that day in one image. "
-              "Nothing here is from before 13 November. Times are UTC.")
-STORY_COUNT = (1 + len(SECOND)
-               + sum(len(items) for _, items in GRID)
-               + sum(len(items) for _, items in BRIEFS))
-assert STORY_COUNT == 40, STORY_COUNT
+MARKET_LINE = "S&P 500 −2.0%  ·  Nikkei −4.7%  ·  FTSE −0.9%  ·  Brent $90.05  ·  Gold −4.2%"
+DATE_NOTE = ("A note for the judge: all 40 stories were reported on Thursday 19 November 2026 — this is that day in one image. "
+             "Nothing here is from before 13 November. Times are UTC.")
+TOTAL_STORIES = (1 + len(SECOND_STORIES)
+                 + sum(len(entries) for _, entries in ILLUSTRATED)
+                 + sum(len(entries) for _, entries in BRIEF_SECTIONS))
+assert TOTAL_STORIES == 40, TOTAL_STORIES
 
-
-# ---------------------------------------------------------------- drawing
-def draw_burst(draw, cx, cy, r, color):
-    pts = []
-    for i in range(16):
-        ang = math.pi * i / 8
-        rr = r if i % 2 == 0 else r * 0.45
-        pts.append((cx + rr * math.cos(ang), cy + rr * math.sin(ang)))
-    draw.polygon(pts, fill=color)
-
-
-def draw_lead_scene(draw, x0, y0, x1, y1):
+# ------------------------------------------------------------------ drawing
+def court_scene(cv, left, top, right, bottom):
     """The Hague court scene: sky, courthouse facade with pediment and
-    columns, scales of justice in front, flag. Kept clean on purpose:
-    no meme text, nothing that reads as garbled at 300px."""
-    draw.rectangle([x0, y0, x1, y1], outline=NAVY, width=2)
-    mid = y0 + int((y1 - y0) * 0.55)
-    draw.rectangle([x0 + 2, y0 + 2, x1 - 2, mid], fill=SKY)
-    draw.rectangle([x0 + 2, mid, x1 - 2, y1 - 2], fill=(214, 205, 184))
+    columns, scales of justice in front, a small flag. Kept clean on
+    purpose: no meme text, nothing that reads as garbled at 300px."""
+    cv.rectangle([left, top, right, bottom], outline=INK["navy"], width=2)
+    horizon = top + int((bottom - top) * 0.55)
+    cv.rectangle([left + 2, top + 2, right - 2, horizon], fill=INK["sky"])
+    cv.rectangle([left + 2, horizon, right - 2, bottom - 2],
+                 fill=INK["ground"])
     # sun
-    draw.ellipse([x1 - 78, y0 + 16, x1 - 30, y0 + 64], fill=(232, 205, 130))
+    cv.ellipse([right - 78, top + 16, right - 30, top + 64], fill=INK["sun"])
     # courthouse: pediment, entablature, columns, steps
-    cx0, cx1 = x0 + 34, x1 - 34
-    ped_y = y0 + 34
-    draw.polygon([(cx0, ped_y + 26), ((cx0 + cx1) // 2, ped_y),
-                  (cx1, ped_y + 26)], fill=NAVY)
-    draw.rectangle([cx0, ped_y + 26, cx1, ped_y + 38], fill=NAVY_SOFT)
-    col_w = 14
-    ncols = 5
-    span = cx1 - cx0 - 24
-    for i in range(ncols):
-        colx = cx0 + 12 + i * (span - col_w) // (ncols - 1)
-        draw.rectangle([colx, ped_y + 38, colx + col_w, mid - 8],
-                       fill=(247, 242, 231), outline=NAVY)
-    draw.rectangle([cx0, mid - 8, cx1, mid], fill=NAVY)
+    col_left, col_right = left + 34, right - 34
+    roof_y = top + 34
+    cv.polygon([(col_left, roof_y + 26), ((col_left + col_right) // 2, roof_y),
+                (col_right, roof_y + 26)], fill=INK["navy"])
+    cv.rectangle([col_left, roof_y + 26, col_right, roof_y + 38],
+                 fill=INK["navy_soft"])
+    shaft = 14
+    count = 5
+    spread = col_right - col_left - 24
+    for i in range(count):
+        shaft_x = col_left + 12 + i * (spread - shaft) // (count - 1)
+        cv.rectangle([shaft_x, roof_y + 38, shaft_x + shaft, horizon - 8],
+                     fill=INK["paper"], outline=INK["navy"])
+    cv.rectangle([col_left, horizon - 8, col_right, horizon], fill=INK["navy"])
     # steps
-    draw.rectangle([cx0 - 8, mid, cx1 + 8, mid + 8], fill=(180, 170, 148))
-    draw.rectangle([cx0 - 16, mid + 8, cx1 + 16, mid + 16],
-                   fill=(160, 150, 128))
+    cv.rectangle([col_left - 8, horizon, col_right + 8, horizon + 8],
+                 fill=INK["step_a"])
+    cv.rectangle([col_left - 16, horizon + 8, col_right + 16, horizon + 16],
+                 fill=INK["step_b"])
     # scales of justice, gold, in front of the steps
-    sx, sy = (x0 + x1) // 2, y1 - 34
-    draw.line([(sx, sy - 26), (sx, sy + 10)], fill=GOLD, width=3)
-    draw.line([(sx - 20, sy - 22), (sx + 20, sy - 22)], fill=GOLD, width=3)
-    draw.ellipse([sx - 3, sy - 29, sx + 3, sy - 23], fill=GOLD)
+    scale_x, scale_y = (left + right) // 2, bottom - 34
+    cv.line([(scale_x, scale_y - 26), (scale_x, scale_y + 10)],
+            fill=INK["gold"], width=3)
+    cv.line([(scale_x - 20, scale_y - 22), (scale_x + 20, scale_y - 22)],
+            fill=INK["gold"], width=3)
+    cv.ellipse([scale_x - 3, scale_y - 29, scale_x + 3, scale_y - 23],
+               fill=INK["gold"])
     for dx in (-20, 20):
-        draw.line([(sx + dx, sy - 22), (sx + dx - 8, sy - 8)], fill=GOLD,
-                  width=2)
-        draw.line([(sx + dx, sy - 22), (sx + dx + 8, sy - 8)], fill=GOLD,
-                  width=2)
-        draw.arc([sx + dx - 9, sy - 12, sx + dx + 9, sy + 2], 0, 180,
-                 fill=GOLD, width=2)
+        cv.line([(scale_x + dx, scale_y - 22), (scale_x + dx - 8, scale_y - 8)],
+                fill=INK["gold"], width=2)
+        cv.line([(scale_x + dx, scale_y - 22), (scale_x + dx + 8, scale_y - 8)],
+                fill=INK["gold"], width=2)
+        cv.arc([scale_x + dx - 9, scale_y - 12, scale_x + dx + 9, scale_y + 2],
+               0, 180, fill=INK["gold"], width=2)
     # small flag on the pediment
-    fx = (cx0 + cx1) // 2
-    draw.line([(fx, ped_y - 16), (fx, ped_y)], fill=NAVY, width=2)
-    draw.polygon([(fx, ped_y - 16), (fx + 16, ped_y - 12), (fx, ped_y - 8)],
-                 fill=RED)
+    pole_x = (col_left + col_right) // 2
+    cv.line([(pole_x, roof_y - 16), (pole_x, roof_y)], fill=INK["navy"],
+            width=2)
+    cv.polygon([(pole_x, roof_y - 16), (pole_x + 16, roof_y - 12),
+                (pole_x, roof_y - 8)], fill=INK["red"])
 
 
-def draw_bridge_icon(draw, x0, y0, s):
+def bridge_glyph(cv, x0, y0, s):
     """Broken bridge: arc with a gap in the middle, deck, piers."""
-    c = NAVY_SOFT
-    draw.arc([x0, y0, x0 + s, y0 + s], 180, 360, fill=c, width=4)
-    draw.line([(x0, y0 + s // 2), (x0 + s // 3, y0 + s // 2)], fill=c, width=4)
-    draw.line([(x0 + 2 * s // 3, y0 + s // 2), (x0 + s, y0 + s // 2)],
-              fill=c, width=4)
-    draw.line([(x0 + 6, y0 + s // 2), (x0 + 6, y0 + s)], fill=c, width=4)
-    draw.line([(x0 + s - 6, y0 + s // 2), (x0 + s - 6, y0 + s)], fill=c, width=4)
+    c = INK["navy_soft"]
+    cv.arc([x0, y0, x0 + s, y0 + s], 180, 360, fill=c, width=4)
+    cv.line([(x0, y0 + s // 2), (x0 + s // 3, y0 + s // 2)], fill=c, width=4)
+    cv.line([(x0 + 2 * s // 3, y0 + s // 2), (x0 + s, y0 + s // 2)],
+            fill=c, width=4)
+    cv.line([(x0 + 6, y0 + s // 2), (x0 + 6, y0 + s)], fill=c, width=4)
+    cv.line([(x0 + s - 6, y0 + s // 2), (x0 + s - 6, y0 + s)], fill=c, width=4)
     # falling arch piece
-    draw.line([(x0 + s // 2 - 8, y0 + s // 2 + 8), (x0 + s // 2 + 8, y0 + s - 4)],
-              fill=RED, width=4)
+    cv.line([(x0 + s // 2 - 8, y0 + s // 2 + 8), (x0 + s // 2 + 8, y0 + s - 4)],
+            fill=INK["red"], width=4)
 
 
-def draw_dome_icon(draw, x0, y0, s):
+def dome_glyph(cv, x0, y0, s):
     """Capitol dome: dome, drum, columns, base."""
-    c = NAVY
-    draw.pieslice([x0 + 10, y0, x0 + s - 10, y0 + s // 2], 180, 360, fill=c)
-    draw.rectangle([x0 + 12, y0 + s // 4, x0 + s - 12, y0 + s // 2], fill=c)
+    c = INK["navy"]
+    cv.pieslice([x0 + 10, y0, x0 + s - 10, y0 + s // 2], 180, 360, fill=c)
+    cv.rectangle([x0 + 12, y0 + s // 4, x0 + s - 12, y0 + s // 2], fill=c)
     for i in range(4):
-        cx = x0 + 14 + i * 16
-        draw.rectangle([cx, y0 + s // 2, cx + 6, y0 + s - 14], fill=c)
-    draw.rectangle([x0 + 6, y0 + s - 14, x0 + s - 6, y0 + s - 8], fill=c)
+        px = x0 + 14 + i * 16
+        cv.rectangle([px, y0 + s // 2, px + 6, y0 + s - 14], fill=c)
+    cv.rectangle([x0 + 6, y0 + s - 14, x0 + s - 6, y0 + s - 8], fill=c)
     # small flag
-    draw.line([(x0 + s // 2, y0 - 8), (x0 + s // 2, y0 + 2)], fill=c, width=2)
-    draw.polygon([(x0 + s // 2, y0 - 8), (x0 + s // 2 + 12, y0 - 5),
-                  (x0 + s // 2, y0 - 2)], fill=RED)
+    cv.line([(x0 + s // 2, y0 - 8), (x0 + s // 2, y0 + 2)], fill=c, width=2)
+    cv.polygon([(x0 + s // 2, y0 - 8), (x0 + s // 2 + 12, y0 - 5),
+                (x0 + s // 2, y0 - 2)], fill=INK["red"])
 
 
-def draw_chip_icon(draw, x0, y0, s):
-    c = CHIP
-    draw.rounded_rectangle([x0 + 10, y0 + 10, x0 + s - 10, y0 + s - 10],
-                           radius=6, fill=c)
+def chip_glyph(cv, x0, y0, s):
+    c = INK["green"]
+    cv.rounded_rectangle([x0 + 10, y0 + 10, x0 + s - 10, y0 + s - 10],
+                         radius=6, fill=c)
     for i in range(3):
-        px = x0 + 20 + i * 18
-        draw.line([(px, y0 + 2), (px, y0 + 10)], fill=c, width=3)
-        draw.line([(px, y0 + s - 10), (px, y0 + s - 2)], fill=c, width=3)
-        py = y0 + 20 + i * 18
-        draw.line([(x0 + 2, py), (x0 + 10, py)], fill=c, width=3)
-        draw.line([(x0 + s - 10, py), (x0 + s - 2, py)], fill=c, width=3)
-    draw.text((x0 + s // 2 - 9, y0 + s // 2 - 13), "$",
-              font=font(F_SANS_B, 24), fill=(255, 255, 255))
+        qx = x0 + 20 + i * 18
+        cv.line([(qx, y0 + 2), (qx, y0 + 10)], fill=c, width=3)
+        cv.line([(qx, y0 + s - 10), (qx, y0 + s - 2)], fill=c, width=3)
+        qy = y0 + 20 + i * 18
+        cv.line([(x0 + 2, qy), (x0 + 10, qy)], fill=c, width=3)
+        cv.line([(x0 + s - 10, qy), (x0 + s - 2, qy)], fill=c, width=3)
+    cv.text((x0 + s // 2 - 9, y0 + s // 2 - 13), "$",
+            font=load_font(SANS_B, 24), fill=(255, 255, 255))
 
 
-def draw_flags_icon(draw, x0, y0, s):
+def flags_glyph(cv, x0, y0, s):
     """Three flags on poles: a summit of three leaders."""
-    c = NAVY
-    colors = [RED, GOLD, NAVY_SOFT]
-    for i, col in enumerate(colors):
-        px = x0 + 12 + i * 22
-        draw.line([(px, y0 + 8), (px, y0 + s)], fill=c, width=3)
-        draw.polygon([(px, y0 + 8), (px + 18, y0 + 13), (px, y0 + 18)],
-                     fill=col)
-    draw.rectangle([x0 + 6, y0 + s - 6, x0 + s - 6, y0 + s], fill=c)
+    c = INK["navy"]
+    shades = [INK["red"], INK["gold"], INK["navy_soft"]]
+    for i, shade in enumerate(shades):
+        pole = x0 + 12 + i * 22
+        cv.line([(pole, y0 + 8), (pole, y0 + s)], fill=c, width=3)
+        cv.polygon([(pole, y0 + 8), (pole + 18, y0 + 13), (pole, y0 + 18)],
+                   fill=shade)
+    cv.rectangle([x0 + 6, y0 + s - 6, x0 + s - 6, y0 + s], fill=c)
 
 
-def draw_grid_icon(draw, x, y, s, kind):
-    """One pictogram in an s×s box, on a light-gold disc so it reads as a
-    picture even at 300px."""
-    cx, cy = x + s // 2, y + s // 2
-    r = s // 2 - 2
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=DISC)
-    n = NAVY
+def pictogram(cv, x, y, size, kind):
+    """One pictogram in a size×size box, on a light-gold disc so it reads
+    as a picture even at 300px."""
+    ox, oy = x + size // 2, y + size // 2
+    r = size // 2 - 2
+    cv.ellipse([ox - r, oy - r, ox + r, oy + r], fill=INK["disc"])
+    n = INK["navy"]
     if kind == "drone":
-        draw.rounded_rectangle([cx - 9, cy - 5, cx + 9, cy + 5], radius=3,
-                               fill=n)
+        cv.rounded_rectangle([ox - 9, oy - 5, ox + 9, oy + 5], radius=3,
+                             fill=n)
         for sx in (-1, 1):
             for sy in (-1, 1):
-                draw.line([(cx + sx * 9, cy + sy * 3),
-                           (cx + sx * 16, cy + sy * 9)], fill=n, width=2)
-                draw.ellipse([cx + sx * 20 - 6, cy + sy * 11 - 2,
-                              cx + sx * 20 + 6, cy + sy * 11 + 2], fill=n)
-        draw.ellipse([cx - 3, cy - 2, cx + 3, cy + 2], fill=GOLD)
+                cv.line([(ox + sx * 9, oy + sy * 3),
+                         (ox + sx * 16, oy + sy * 9)], fill=n, width=2)
+                cv.ellipse([ox + sx * 20 - 6, oy + sy * 11 - 2,
+                            ox + sx * 20 + 6, oy + sy * 11 + 2], fill=n)
+        cv.ellipse([ox - 3, oy - 2, ox + 3, oy + 2], fill=INK["gold"])
     elif kind == "parliament":
-        draw.polygon([(cx - 16, cy - 4), (cx, cy - 16), (cx + 16, cy - 4)],
-                     fill=n)
-        for ox in (-12, -2, 8):
-            draw.rectangle([cx + ox, cy - 2, cx + ox + 4, cy + 12], fill=n)
-        draw.rectangle([cx - 17, cy + 12, cx + 17, cy + 16], fill=n)
+        cv.polygon([(ox - 16, oy - 4), (ox, oy - 16), (ox + 16, oy - 4)],
+                   fill=n)
+        for off in (-12, -2, 8):
+            cv.rectangle([ox + off, oy - 2, ox + off + 4, oy + 12], fill=n)
+        cv.rectangle([ox - 17, oy + 12, ox + 17, oy + 16], fill=n)
     elif kind == "rocket":
-        draw.polygon([(cx, cy - 18), (cx + 6, cy - 4), (cx + 4, cy + 10),
-                      (cx - 4, cy + 10), (cx - 6, cy - 4)], fill=n)
-        draw.polygon([(cx - 6, cy + 4), (cx - 12, cy + 14), (cx - 6, cy + 10)],
-                     fill=RED)
-        draw.polygon([(cx + 6, cy + 4), (cx + 12, cy + 14), (cx + 6, cy + 10)],
-                     fill=RED)
-        draw.polygon([(cx - 3, cy + 10), (cx, cy + 18), (cx + 3, cy + 10)],
-                     fill=(224, 110, 34))
-        draw.ellipse([cx - 3, cy - 8, cx + 3, cy - 2], fill=PAPER)
+        cv.polygon([(ox, oy - 18), (ox + 6, oy - 4), (ox + 4, oy + 10),
+                    (ox - 4, oy + 10), (ox - 6, oy - 4)], fill=n)
+        cv.polygon([(ox - 6, oy + 4), (ox - 12, oy + 14), (ox - 6, oy + 10)],
+                   fill=INK["red"])
+        cv.polygon([(ox + 6, oy + 4), (ox + 12, oy + 14), (ox + 6, oy + 10)],
+                   fill=INK["red"])
+        cv.polygon([(ox - 3, oy + 10), (ox, oy + 18), (ox + 3, oy + 10)],
+                   fill=INK["flame"])
+        cv.ellipse([ox - 3, oy - 8, ox + 3, oy - 2], fill=INK["paper"])
     elif kind == "march":
-        draw.rectangle([cx + 2, cy - 16, cx + 18, cy - 6], fill=GOLD)
-        draw.line([(cx + 10, cy - 6), (cx + 10, cy + 8)], fill=n, width=2)
-        for hx, hy in ((cx - 14, cy - 6), (cx - 2, cy - 2)):
-            draw.ellipse([hx - 4, hy - 4, hx + 4, hy + 4], fill=n)
-            draw.rectangle([hx - 5, hy + 5, hx + 5, hy + 16], fill=n)
+        cv.rectangle([ox + 2, oy - 16, ox + 18, oy - 6], fill=INK["gold"])
+        cv.line([(ox + 10, oy - 6), (ox + 10, oy + 8)], fill=n, width=2)
+        for hx, hy in ((ox - 14, oy - 6), (ox - 2, oy - 2)):
+            cv.ellipse([hx - 4, hy - 4, hx + 4, hy + 4], fill=n)
+            cv.rectangle([hx - 5, hy + 5, hx + 5, hy + 16], fill=n)
     elif kind == "plane":
-        draw.polygon([(cx - 20, cy + 2), (cx + 20, cy - 2), (cx + 20, cy + 4),
-                      (cx - 20, cy + 6)], fill=n)
-        draw.polygon([(cx - 6, cy - 12), (cx + 4, cy - 12), (cx, cy + 2),
-                      (cx - 10, cy + 2)], fill=n)
-        draw.polygon([(cx - 18, cy - 8), (cx - 12, cy - 8), (cx - 16, cy + 2)],
-                     fill=n)
+        cv.polygon([(ox - 20, oy + 2), (ox + 20, oy - 2), (ox + 20, oy + 4),
+                    (ox - 20, oy + 6)], fill=n)
+        cv.polygon([(ox - 6, oy - 12), (ox + 4, oy - 12), (ox, oy + 2),
+                    (ox - 10, oy + 2)], fill=n)
+        cv.polygon([(ox - 18, oy - 8), (ox - 12, oy - 8), (ox - 16, oy + 2)],
+                   fill=n)
     elif kind == "cyclone":
-        draw.arc([cx - 16, cy - 16, cx + 16, cy + 16], 0, 270, fill=n, width=3)
-        draw.arc([cx - 10, cy - 10, cx + 10, cy + 10], 90, 360, fill=n,
-                 width=3)
-        draw.arc([cx - 4, cy - 4, cx + 4, cy + 4], 180, 90, fill=n, width=3)
-        draw.ellipse([cx - 2, cy - 2, cx + 2, cy + 2], fill=GOLD)
+        cv.arc([ox - 16, oy - 16, ox + 16, oy + 16], 0, 270, fill=n, width=3)
+        cv.arc([ox - 10, oy - 10, ox + 10, oy + 10], 90, 360, fill=n,
+               width=3)
+        cv.arc([ox - 4, oy - 4, ox + 4, oy + 4], 180, 90, fill=n, width=3)
+        cv.ellipse([ox - 2, oy - 2, ox + 2, oy + 2], fill=INK["gold"])
     elif kind == "dollar":
-        draw.ellipse([cx - 15, cy - 15, cx + 15, cy + 15], fill=GOLD)
-        t = "$"
-        tf = font(F_SANS_B, 24)
-        tw = draw.textlength(t, font=tf)
-        draw.text((cx - tw / 2, cy - 13), t, font=tf, fill=n)
+        cv.ellipse([ox - 15, oy - 15, ox + 15, oy + 15], fill=INK["gold"])
+        mark = "$"
+        mf = load_font(SANS_B, 24)
+        mw = cv.textlength(mark, font=mf)
+        cv.text((ox - mw / 2, oy - 13), mark, font=mf, fill=n)
     elif kind == "crackhouse":
-        draw.polygon([(cx - 17, cy - 2), (cx, cy - 16), (cx + 17, cy - 2)],
-                     fill=n)
-        draw.rectangle([cx - 13, cy - 2, cx + 13, cy + 16], outline=n, width=3)
-        draw.line([(cx + 2, cy - 2), (cx - 2, cy + 6), (cx + 3, cy + 12)],
-                  fill=RED, width=2)
-        draw.rectangle([cx - 3, cy + 8, cx + 3, cy + 16], fill=n)
+        cv.polygon([(ox - 17, oy - 2), (ox, oy - 16), (ox + 17, oy - 2)],
+                   fill=n)
+        cv.rectangle([ox - 13, oy - 2, ox + 13, oy + 16], outline=n, width=3)
+        cv.line([(ox + 2, oy - 2), (ox - 2, oy + 6), (ox + 3, oy + 12)],
+                fill=INK["red"], width=2)
+        cv.rectangle([ox - 3, oy + 8, ox + 3, oy + 16], fill=n)
     elif kind == "oil":
-        draw.polygon([(cx, cy - 18), (cx + 8, cy - 2), (cx - 8, cy - 2)],
-                     fill=n)
-        draw.ellipse([cx - 10, cy - 4, cx + 10, cy + 16], fill=n)
+        cv.polygon([(ox, oy - 18), (ox + 8, oy - 2), (ox - 8, oy - 2)],
+                   fill=n)
+        cv.ellipse([ox - 10, oy - 4, ox + 10, oy + 16], fill=n)
     elif kind == "virus":
         for i in range(8):
             ang = math.pi * i / 4
-            x1 = cx + 10 * math.cos(ang)
-            y1 = cy + 10 * math.sin(ang)
-            x2 = cx + 16 * math.cos(ang)
-            y2 = cy + 16 * math.sin(ang)
-            draw.line([(x1, y1), (x2, y2)], fill=RED, width=2)
-            draw.ellipse([x2 - 2, y2 - 2, x2 + 2, y2 + 2], fill=RED)
-        draw.ellipse([cx - 9, cy - 9, cx + 9, cy + 9], fill=RED)
+            x1 = ox + 10 * math.cos(ang)
+            y1 = oy + 10 * math.sin(ang)
+            x2 = ox + 16 * math.cos(ang)
+            y2 = oy + 16 * math.sin(ang)
+            cv.line([(x1, y1), (x2, y2)], fill=INK["red"], width=2)
+            cv.ellipse([x2 - 2, y2 - 2, x2 + 2, y2 + 2], fill=INK["red"])
+        cv.ellipse([ox - 9, oy - 9, ox + 9, oy + 9], fill=INK["red"])
     elif kind == "chip":
-        c = CHIP
-        draw.rounded_rectangle([cx - 13, cy - 13, cx + 13, cy + 13], radius=4,
-                               fill=c)
+        c = INK["green"]
+        cv.rounded_rectangle([ox - 13, oy - 13, ox + 13, oy + 13], radius=4,
+                             fill=c)
         for i in range(3):
-            px = cx - 8 + i * 8
-            draw.line([(px, cy - 17), (px, cy - 13)], fill=c, width=2)
-            draw.line([(px, cy + 13), (px, cy + 17)], fill=c, width=2)
-            py = cy - 8 + i * 8
-            draw.line([(cx - 17, py), (cx - 13, py)], fill=c, width=2)
-            draw.line([(cx + 13, py), (cx + 17, py)], fill=c, width=2)
-        t = "$"
-        tf = font(F_SANS_B, 18)
-        tw = draw.textlength(t, font=tf)
-        draw.text((cx - tw / 2, cy - 10), t, font=tf, fill=(255, 255, 255))
+            px = ox - 8 + i * 8
+            cv.line([(px, oy - 17), (px, oy - 13)], fill=c, width=2)
+            cv.line([(px, oy + 13), (px, oy + 17)], fill=c, width=2)
+            py = oy - 8 + i * 8
+            cv.line([(ox - 17, py), (ox - 13, py)], fill=c, width=2)
+            cv.line([(ox + 13, py), (ox + 17, py)], fill=c, width=2)
+        mark = "$"
+        mf = load_font(SANS_B, 18)
+        mw = cv.textlength(mark, font=mf)
+        cv.text((ox - mw / 2, oy - 10), mark, font=mf, fill=(255, 255, 255))
     elif kind == "controller":
-        draw.rounded_rectangle([cx - 17, cy - 8, cx + 17, cy + 10], radius=7,
-                               fill=n)
-        draw.rectangle([cx - 13, cy - 3, cx - 7, cy + 3], fill=PAPER)
-        draw.rectangle([cx - 11, cy - 5, cx - 9, cy + 5], fill=PAPER)
-        draw.ellipse([cx + 6, cy - 4, cx + 10, cy], fill=GOLD)
-        draw.ellipse([cx + 11, cy + 1, cx + 15, cy + 5], fill=GOLD)
+        cv.rounded_rectangle([ox - 17, oy - 8, ox + 17, oy + 10], radius=7,
+                             fill=n)
+        cv.rectangle([ox - 13, oy - 3, ox - 7, oy + 3], fill=INK["paper"])
+        cv.rectangle([ox - 11, oy - 5, ox - 9, oy + 5], fill=INK["paper"])
+        cv.ellipse([ox + 6, oy - 4, ox + 10, oy], fill=INK["gold"])
+        cv.ellipse([ox + 11, oy + 1, ox + 15, oy + 5], fill=INK["gold"])
     elif kind == "boat":
         # small boat: hull, mast, sail, waves
-        draw.polygon([(cx - 16, cy + 2), (cx + 16, cy + 2), (cx + 11, cy + 12),
-                      (cx - 11, cy + 12)], fill=n)
-        draw.line([(cx, cy + 2), (cx, cy - 16)], fill=n, width=2)
-        draw.polygon([(cx + 1, cy - 15), (cx + 1, cy + 1), (cx + 13, cy + 1)],
-                     fill=GOLD)
-        draw.line([(cx - 18, cy + 16), (cx + 18, cy + 16)], fill=(90, 130, 180),
-                  width=2)
+        cv.polygon([(ox - 16, oy + 2), (ox + 16, oy + 2), (ox + 11, oy + 12),
+                    (ox - 11, oy + 12)], fill=n)
+        cv.line([(ox, oy + 2), (ox, oy - 16)], fill=n, width=2)
+        cv.polygon([(ox + 1, oy - 15), (ox + 1, oy + 1), (ox + 13, oy + 1)],
+                   fill=INK["gold"])
+        cv.line([(ox - 18, oy + 16), (ox + 18, oy + 16)], fill=INK["wave"],
+                width=2)
     elif kind == "shield":
-        draw.polygon([(cx, cy - 17), (cx + 14, cy - 11), (cx + 14, cy + 2),
-                      (cx, cy + 17), (cx - 14, cy + 2), (cx - 14, cy - 11)],
-                     fill=n)
-        draw.line([(cx - 6, cy), (cx - 1, cy + 6), (cx + 8, cy - 6)],
-                  fill=PAPER, width=3)
+        cv.polygon([(ox, oy - 17), (ox + 14, oy - 11), (ox + 14, oy + 2),
+                    (ox, oy + 17), (ox - 14, oy + 2), (ox - 14, oy - 11)],
+                   fill=n)
+        cv.line([(ox - 6, oy), (ox - 1, oy + 6), (ox + 8, oy - 6)],
+                fill=INK["paper"], width=3)
     elif kind == "planet":
-        draw.ellipse([cx - 13, cy - 13, cx + 13, cy + 13], fill=n)
-        draw.ellipse([cx - 6, cy - 6, cx - 1, cy - 1], fill=PAPER)
-        draw.ellipse([cx + 3, cy + 2, cx + 7, cy + 6], fill=PAPER)
-        draw.line([(cx - 17, cy + 6), (cx + 17, cy - 6)], fill=GOLD, width=2)
+        cv.ellipse([ox - 13, oy - 13, ox + 13, oy + 13], fill=n)
+        cv.ellipse([ox - 6, oy - 6, ox - 1, oy - 1], fill=INK["paper"])
+        cv.ellipse([ox + 3, oy + 2, ox + 7, oy + 6], fill=INK["paper"])
+        cv.line([(ox - 17, oy + 6), (ox + 17, oy - 6)], fill=INK["gold"],
+                width=2)
     elif kind == "bolt":
-        draw.polygon([(cx + 4, cy - 18), (cx - 8, cy + 2), (cx - 1, cy + 2),
-                      (cx - 4, cy + 18), (cx + 8, cy - 2), (cx + 1, cy - 2)],
-                     fill=GOLD)
+        cv.polygon([(ox + 4, oy - 18), (ox - 8, oy + 2), (ox - 1, oy + 2),
+                    (ox - 4, oy + 18), (ox + 8, oy - 2), (ox + 1, oy - 2)],
+                   fill=INK["gold"])
     elif kind == "tower":
         # skyscraper with a damage mark near the top
-        draw.rectangle([cx - 8, cy - 17, cx + 8, cy + 16], fill=n)
-        for wy in range(cy - 12, cy + 14, 6):
-            draw.line([(cx - 5, wy), (cx + 5, wy)], fill=PAPER, width=1)
-        draw.line([(cx - 8, cy - 6), (cx + 8, cy + 2)], fill=RED, width=2)
-        draw.line([(cx + 8, cy - 6), (cx - 8, cy + 2)], fill=RED, width=2)
+        cv.rectangle([ox - 8, oy - 17, ox + 8, oy + 16], fill=n)
+        for wy in range(oy - 12, oy + 14, 6):
+            cv.line([(ox - 5, wy), (ox + 5, wy)], fill=INK["paper"], width=1)
+        cv.line([(ox - 8, oy - 6), (ox + 8, oy + 2)], fill=INK["red"], width=2)
+        cv.line([(ox + 8, oy - 6), (ox - 8, oy + 2)], fill=INK["red"], width=2)
     else:
         raise ValueError(f"unknown icon {kind}")
 
 
-def section_glyph(draw, x, y, name):
-    """Small gold glyph per section, drawn left of the section header."""
-    g = GOLD
+def section_mark(cv, x, y, name):
+    """Small gold mark per section, drawn left of the section header."""
+    g = INK["gold"]
     if name == "MIDDLE EAST":
-        draw_burst(draw, x + 5, y + 5, 6, g)
+        starburst(cv, x + 5, y + 5, 6, g)
     elif name == "EUROPE":
-        draw.ellipse([x, y, x + 10, y + 10], outline=g, width=2)
-        draw.ellipse([x + 3, y + 3, x + 7, y + 7], fill=g)
+        cv.ellipse([x, y, x + 10, y + 10], outline=g, width=2)
+        cv.ellipse([x + 3, y + 3, x + 7, y + 7], fill=g)
     elif name == "ASIA-PACIFIC":
-        draw.arc([x - 2, y - 2, x + 12, y + 8], 200, 340, fill=g, width=2)
-        draw.arc([x - 2, y + 3, x + 12, y + 13], 200, 340, fill=g, width=2)
+        cv.arc([x - 2, y - 2, x + 12, y + 8], 200, 340, fill=g, width=2)
+        cv.arc([x - 2, y + 3, x + 12, y + 13], 200, 340, fill=g, width=2)
     elif name == "AFRICA":
-        draw.polygon([(x + 5, y), (x + 11, y + 10), (x, y + 10)], fill=g)
+        cv.polygon([(x + 5, y), (x + 11, y + 10), (x, y + 10)], fill=g)
     elif name == "AMERICAS":
-        draw.ellipse([x, y, x + 10, y + 10], outline=g, width=2)
-        draw.line([(x, y + 5), (x + 10, y + 5)], fill=g, width=1)
+        cv.ellipse([x, y, x + 10, y + 10], outline=g, width=2)
+        cv.line([(x, y + 5), (x + 10, y + 5)], fill=g, width=1)
     elif name == "HEALTH & SCIENCE":
-        draw.rectangle([x + 3, y, x + 7, y + 10], fill=g)
-        draw.rectangle([x, y + 3, x + 10, y + 7], fill=g)
+        cv.rectangle([x + 3, y, x + 7, y + 10], fill=g)
+        cv.rectangle([x, y + 3, x + 10, y + 7], fill=g)
     elif name == "SPORT":
-        draw.ellipse([x, y, x + 10, y + 10], outline=g, width=2)
-        draw.line([(x + 2, y + 2), (x + 8, y + 8)], fill=g, width=1)
-        draw.line([(x + 8, y + 2), (x + 2, y + 8)], fill=g, width=1)
+        cv.ellipse([x, y, x + 10, y + 10], outline=g, width=2)
+        cv.line([(x + 2, y + 2), (x + 8, y + 8)], fill=g, width=1)
+        cv.line([(x + 8, y + 2), (x + 2, y + 8)], fill=g, width=1)
     else:  # TECH & CULTURE
-        draw.ellipse([x, y, x + 10, y + 10], outline=g, width=2)
-        draw.line([(x + 2, y + 2), (x + 8, y + 8)], fill=g, width=1)
-        draw.line([(x + 8, y + 2), (x + 2, y + 8)], fill=g, width=1)
+        cv.ellipse([x, y, x + 10, y + 10], outline=g, width=2)
+        cv.line([(x + 2, y + 2), (x + 8, y + 8)], fill=g, width=1)
+        cv.line([(x + 8, y + 2), (x + 2, y + 8)], fill=g, width=1)
 
-
-def main():
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
+def render():
+    page = Image.new("RGB", (PAGE_W, PAGE_H), INK["paper"])
+    cv = ImageDraw.Draw(page)
 
     # ---- gold top bar
-    d.rectangle([0, 0, W, 7], fill=GOLD)
+    cv.rectangle([0, 0, PAGE_W, 7], fill=INK["gold"])
 
     # ---- nameplate: globe, title, date, briefing label
     gx, gy, gr = 58, 46, 26
-    d.ellipse([gx - gr, gy - gr, gx + gr, gy + gr], outline=NAVY, width=2)
-    d.ellipse([gx - gr // 2, gy - gr, gx + gr // 2, gy + gr], outline=NAVY,
-              width=1)
-    d.line([(gx - gr, gy), (gx + gr, gy)], fill=NAVY, width=1)
-    title = "THE WORLD TODAY"
-    tf = font(F_SERIF_B, 50)
-    d.text(((W - d.textlength(title, font=tf)) / 2, 10), title,
-           font=tf, fill=NAVY)
-    bf = font(F_SANS_B, 11)
-    btext = "GLOBAL\nNEWS\nBRIEFING"
-    bw = max(d.textlength(ln, font=bf) for ln in btext.split("\n"))
-    for i, ln in enumerate(btext.split("\n")):
-        d.text((W - 28 - bw, 16 + i * 14), ln, font=bf, fill=NAVY)
-    date = "THURSDAY,  19  NOVEMBER  2026"
-    df = font(F_SANS_B, 18)
-    dw = d.textlength(date, font=df)
-    d.text(((W - dw) / 2, 72), date, font=df, fill=NAVY)
-    d.line([(28, 82), ((W - dw) / 2 - 18, 82)], fill=NAVY, width=2)
-    d.line([((W + dw) / 2 + 18, 82), (W - 28, 82)], fill=NAVY, width=2)
-    d.line([(28, 90), (W - 28, 90)], fill=NAVY, width=2)
-    d.line([(28, 94), (W - 28, 94)], fill=GOLD, width=1)
+    cv.ellipse([gx - gr, gy - gr, gx + gr, gy + gr], outline=INK["navy"],
+               width=2)
+    cv.ellipse([gx - gr // 2, gy - gr, gx + gr // 2, gy + gr],
+               outline=INK["navy"], width=1)
+    cv.line([(gx - gr, gy), (gx + gr, gy)], fill=INK["navy"], width=1)
+    masthead = "THE WORLD TODAY"
+    mf = load_font(SERIF_B, 50)
+    cv.text(((PAGE_W - cv.textlength(masthead, font=mf)) / 2, 10), masthead,
+            font=mf, fill=INK["navy"])
+    bf = load_font(SANS_B, 11)
+    blurb = "GLOBAL\nNEWS\nBRIEFING"
+    blurb_w = max(cv.textlength(row, font=bf) for row in blurb.split("\n"))
+    for i, row in enumerate(blurb.split("\n")):
+        cv.text((PAGE_W - 28 - blurb_w, 16 + i * 14), row, font=bf,
+                fill=INK["navy"])
+    dateline = "THURSDAY,  19  NOVEMBER  2026"
+    df = load_font(SANS_B, 18)
+    date_w = cv.textlength(dateline, font=df)
+    cv.text(((PAGE_W - date_w) / 2, 72), dateline, font=df, fill=INK["navy"])
+    cv.line([(28, 82), ((PAGE_W - date_w) / 2 - 18, 82)], fill=INK["navy"],
+            width=2)
+    cv.line([((PAGE_W + date_w) / 2 + 18, 82), (PAGE_W - 28, 82)],
+            fill=INK["navy"], width=2)
+    cv.line([(28, 90), (PAGE_W - 28, 90)], fill=INK["navy"], width=2)
+    cv.line([(28, 94), (PAGE_W - 28, 94)], fill=INK["gold"], width=1)
 
     # ---- lead band
-    ly = 102
-    d.text((28, ly), LEAD["kicker"], font=font(F_SANS_B, 12), fill=GOLD)
+    lead_y = 102
+    cv.text((28, lead_y), LEAD_TAG, font=load_font(SANS_B, 12),
+            fill=INK["gold"])
     vol = "VOL. XI, NO. 3,872"
-    vf = font(F_SANS_B, 11)
-    d.text((640 - d.textlength(vol, font=vf), ly), vol, font=vf, fill=GREY)
-    hf = font(F_SERIF_B, 38)
-    hl = wrap(d, LEAD["headline"], hf, 600)
-    assert len(hl) <= 2, f"lead headline wraps to {len(hl)} lines"
-    y = draw_lines(d, 28, ly + 20, hl, hf, 44, NAVY)
-    sf = font(F_SANS, 14)
-    sl = wrap(d, LEAD["sub"], sf, 600)
-    assert len(sl) <= 2, f"lead sub wraps to {len(sl)} lines"
-    y = draw_lines(d, 28, y + 5, sl, sf, 17, INK)
+    vf = load_font(SANS_B, 11)
+    cv.text((640 - cv.textlength(vol, font=vf), lead_y), vol, font=vf,
+            fill=INK["grey"])
+    hf = load_font(SERIF_B, 38)
+    head_rows = fit_text(cv, LEAD_TITLE, hf, 600)
+    assert len(head_rows) <= 2, f"lead headline wraps to {len(head_rows)} lines"
+    y = place_lines(cv, 28, lead_y + 20, head_rows, hf, 44, INK["navy"])
+    sf = load_font(SANS, 14)
+    deck_rows = fit_text(cv, LEAD_DECK, sf, 600)
+    assert len(deck_rows) <= 2, f"lead deck wraps to {len(deck_rows)} lines"
+    y = place_lines(cv, 28, y + 5, deck_rows, sf, 17, INK["text"])
     lead_bottom = max(y + 4, 248)
-    d.text((28, lead_bottom), LEAD["source"], font=font(F_SANS_B, 11),
-           fill=GREY)
-    draw_lead_scene(d, 656, 102, 996, 262)
+    cv.text((28, lead_bottom), LEAD_CREDIT, font=load_font(SANS_B, 11),
+            fill=INK["grey"])
+    court_scene(cv, 656, 102, 996, 262)
     lead_end = lead_bottom + 12
-    d.line([(28, lead_end), (W - 28, lead_end)], fill=NAVY, width=2)
+    cv.line([(28, lead_end), (PAGE_W - 28, lead_end)], fill=INK["navy"],
+            width=2)
 
     # ---- second band: two boxes
-    sy = lead_end + 7
+    second_y = lead_end + 7
     boxes = [(28, 500), (524, 996)]
-    second_end = sy
-    for (bx0, bx1), story in zip(boxes, SECOND):
-        bw = bx1 - bx0
-        d.text((bx0, sy), story["kicker"], font=font(F_SANS_B, 12), fill=GOLD)
+    second_end = second_y
+    for (bx0, bx1), (tag, title, deck, credit, pic) in zip(
+            boxes, SECOND_STORIES):
+        box_w = bx1 - bx0
+        cv.text((bx0, second_y), tag, font=load_font(SANS_B, 12),
+                fill=INK["gold"])
         icon_w = 84
-        tf2 = font(F_SERIF_B, 23)
-        hl = wrap(d, story["headline"], tf2, bw - icon_w - 12)
-        assert len(hl) <= 2, f"second headline wraps to {len(hl)}: {story['headline']}"
-        y = draw_lines(d, bx0, sy + 19, hl, tf2, 27, NAVY)
-        sf2 = font(F_SANS, 12)
-        sl = wrap(d, story["sub"], sf2, bw - icon_w - 12)
-        assert len(sl) <= 1, f"second sub wraps to {len(sl)}: {story['headline']}"
-        y = draw_lines(d, bx0, y + 3, sl, sf2, 15, INK)
-        d.text((bx0, y + 4), story["source"], font=font(F_SANS_B, 10),
-               fill=GREY)
-        if story["icon"] == "bridge":
-            draw_bridge_icon(d, bx1 - 80, sy + 21, 68)
-        elif story["icon"] == "flags":
-            draw_flags_icon(d, bx1 - 80, sy + 21, 68)
-        elif story["icon"] == "dome":
-            draw_dome_icon(d, bx1 - 80, sy + 21, 68)
+        tf2 = load_font(SERIF_B, 23)
+        head_rows = fit_text(cv, title, tf2, box_w - icon_w - 12)
+        assert len(head_rows) <= 2, \
+            f"second headline wraps to {len(head_rows)}: {title}"
+        y = place_lines(cv, bx0, second_y + 19, head_rows, tf2, 27,
+                        INK["navy"])
+        sf2 = load_font(SANS, 12)
+        deck_rows = fit_text(cv, deck, sf2, box_w - icon_w - 12)
+        assert len(deck_rows) <= 1, \
+            f"second deck wraps to {len(deck_rows)}: {title}"
+        y = place_lines(cv, bx0, y + 3, deck_rows, sf2, 15, INK["text"])
+        cv.text((bx0, y + 4), credit, font=load_font(SANS_B, 10),
+                fill=INK["grey"])
+        if pic == "bridge":
+            bridge_glyph(cv, bx1 - 80, second_y + 21, 68)
+        elif pic == "flags":
+            flags_glyph(cv, bx1 - 80, second_y + 21, 68)
+        elif pic == "dome":
+            dome_glyph(cv, bx1 - 80, second_y + 21, 68)
         else:
-            draw_chip_icon(d, bx1 - 80, sy + 21, 68)
+            chip_glyph(cv, bx1 - 80, second_y + 21, 68)
         second_end = max(second_end, y + 4 + 12)
-    d.line([(512, sy + 4), (512, second_end - 4)], fill=(200, 192, 172),
-           width=1)
-    d.line([(28, second_end + 6), (W - 28, second_end + 6)], fill=NAVY,
-           width=2)
+    cv.line([(512, second_y + 4), (512, second_end - 4)], fill=INK["rule"],
+            width=1)
+    cv.line([(28, second_end + 6), (PAGE_W - 28, second_end + 6)],
+            fill=INK["navy"], width=2)
 
-    # ---- illustrated grid: three columns, icon + headline only
-    gy0 = second_end + 14
-    gy1 = 600
+    # ---- illustrated grid: three columns, pictogram + headline only
+    grid_y0 = second_end + 14
+    grid_y1 = 600
     col_x = [28, 353, 678]
     col_w = 317
-    hf3 = font(F_SERIF_B, 17)
+    hf3 = load_font(SERIF_B, 17)
     ICON = 32
-    for ci, sections in enumerate(COLUMNS):
+    for ci, section_ids in enumerate(GRID_COLS):
         x = col_x[ci]
-        y = gy0
-        for si in sections:
-            name, items = GRID[si]
-            section_glyph(d, x, y + 2, name)
-            d.text((x + 16, y), name, font=font(F_SANS_B, 12), fill=NAVY)
-            d.line([(x, y + 18), (x + col_w, y + 18)],
-                   fill=(200, 192, 172), width=1)
+        y = grid_y0
+        for si in section_ids:
+            name, entries = ILLUSTRATED[si]
+            section_mark(cv, x, y + 2, name)
+            cv.text((x + 16, y), name, font=load_font(SANS_B, 12),
+                    fill=INK["navy"])
+            cv.line([(x, y + 18), (x + col_w, y + 18)], fill=INK["rule"],
+                    width=1)
             y += 24
-            for headline, icon in items:
-                draw_grid_icon(d, x, y, ICON, icon)
+            for pic, head in entries:
+                pictogram(cv, x, y, ICON, pic)
                 tx = x + ICON + 8
                 tw = col_w - ICON - 8
-                hl = wrap(d, headline, hf3, tw)
-                assert len(hl) <= 2, f"grid headline wraps to {len(hl)}: {headline}"
-                yy = draw_lines(d, tx, y + 1, hl, hf3, 20, NAVY)
+                head_rows = fit_text(cv, head, hf3, tw)
+                assert len(head_rows) <= 2, \
+                    f"grid headline wraps to {len(head_rows)}: {head}"
+                yy = place_lines(cv, tx, y + 1, head_rows, hf3, 20,
+                                 INK["navy"])
                 y = max(y + ICON, yy) + 5
             y += 3  # extra gap between sections
-        assert y - 5 <= gy1, f"illustrated column {ci} overflows: ends {y}"
+        assert y - 5 <= grid_y1, f"illustrated column {ci} overflows: ends {y}"
         if ci < 2:
-            d.line([(x + col_w + 4, gy0), (x + col_w + 4, gy1)],
-                   fill=(200, 192, 172), width=1)
-    grid_end = gy1
+            cv.line([(x + col_w + 4, grid_y0), (x + col_w + 4, grid_y1)],
+                    fill=INK["rule"], width=1)
+    grid_end = grid_y1
 
     # ---- briefs: "MORE FROM THE DAY" header + three columns
-    by0 = grid_end + 10
-    d.text((28, by0), "MORE FROM THE DAY  ·  25 STORIES",
-           font=font(F_SANS_B, 13), fill=GOLD)
-    d.line([(28, by0 + 20), (W - 28, by0 + 20)], fill=NAVY, width=1)
-    by1 = 913
-    bhf = font(F_SERIF_B, 13)
-    bsf = font(F_SANS, 10)
-    for ci, sections in enumerate(BRIEF_COLUMNS):
+    brief_y0 = grid_end + 10
+    cv.text((28, brief_y0), "MORE FROM THE DAY  ·  25 STORIES",
+            font=load_font(SANS_B, 13), fill=INK["gold"])
+    cv.line([(28, brief_y0 + 20), (PAGE_W - 28, brief_y0 + 20)],
+            fill=INK["navy"], width=1)
+    brief_y1 = 913
+    bhf = load_font(SERIF_B, 13)
+    bsf = load_font(SANS, 10)
+    for ci, section_ids in enumerate(BRIEF_COLS):
         x = col_x[ci]
-        y = by0 + 26
-        for si in sections:
-            name, items = BRIEFS[si]
-            section_glyph(d, x, y + 2, name)
-            d.text((x + 16, y), name, font=font(F_SANS_B, 12), fill=NAVY)
-            d.line([(x, y + 18), (x + col_w, y + 18)],
-                   fill=(200, 192, 172), width=1)
+        y = brief_y0 + 26
+        for si in section_ids:
+            name, entries = BRIEF_SECTIONS[si]
+            section_mark(cv, x, y + 2, name)
+            cv.text((x + 16, y), name, font=load_font(SANS_B, 12),
+                    fill=INK["navy"])
+            cv.line([(x, y + 18), (x + col_w, y + 18)], fill=INK["rule"],
+                    width=1)
             y += 22
-            for headline, sub in items:
-                hl = wrap(d, headline, bhf, col_w)
-                assert len(hl) <= 2, f"brief headline wraps to {len(hl)}: {headline}"
-                y = draw_lines(d, x, y, hl, bhf, 16, NAVY)
-                if sub:
-                    sl = wrap(d, sub, bsf, col_w)
-                    assert len(sl) <= 1, f"brief sub wraps to {len(sl)}: {sub}"
-                    y = draw_lines(d, x, y + 1, sl, bsf, 12, (74, 72, 66))
+            for head, deck in entries:
+                head_rows = fit_text(cv, head, bhf, col_w)
+                assert len(head_rows) <= 2, \
+                    f"brief headline wraps to {len(head_rows)}: {head}"
+                y = place_lines(cv, x, y, head_rows, bhf, 16, INK["navy"])
+                if deck:
+                    deck_rows = fit_text(cv, deck, bsf, col_w)
+                    assert len(deck_rows) <= 1, \
+                        f"brief deck wraps to {len(deck_rows)}: {deck}"
+                    y = place_lines(cv, x, y + 1, deck_rows, bsf, 12,
+                                    INK["sub_grey"])
                 y += 2
             y += 2  # extra gap between sections
-        assert y - 3 <= by1, f"briefs column {ci} overflows: ends {y}"
+        assert y - 3 <= brief_y1, f"briefs column {ci} overflows: ends {y}"
         if ci < 2:
-            d.line([(x + col_w + 4, by0 + 26), (x + col_w + 4, by1)],
-                   fill=(200, 192, 172), width=1)
+            cv.line([(x + col_w + 4, brief_y0 + 26), (x + col_w + 4, brief_y1)],
+                    fill=INK["rule"], width=1)
 
     # ---- UTC timeline strip
-    ty0 = by1 + 6
-    d.line([(28, ty0), (W - 28, ty0)], fill=NAVY, width=1)
-    d.text((28, ty0 + 7), "THE DAY IN UTC",
-           font=font(F_SANS_B, 12), fill=GOLD)
-    tf_t = font(F_SANS_B, 12)
-    tf_l = font(F_SANS, 11)
-    tw_col = (W - 56) // len(TIMELINE)
-    for i, (t, label) in enumerate(TIMELINE):
-        cx = 28 + i * tw_col + tw_col // 2
-        d.text((cx - d.textlength(t, font=tf_t) / 2, ty0 + 20), t,
-               font=tf_t, fill=NAVY)
-        ll = wrap(d, label, tf_l, tw_col - 12)
-        assert len(ll) <= 2, f"timeline label wraps to {len(ll)}: {label}"
-        ly2 = ty0 + 34
-        for ln in ll:
-            d.text((cx - d.textlength(ln, font=tf_l) / 2, ly2), ln,
-                   font=tf_l, fill=INK)
-            ly2 += 12
+    tl_y0 = brief_y1 + 6
+    cv.line([(28, tl_y0), (PAGE_W - 28, tl_y0)], fill=INK["navy"], width=1)
+    cv.text((28, tl_y0 + 7), "THE DAY IN UTC",
+            font=load_font(SANS_B, 12), fill=INK["gold"])
+    tf_t = load_font(SANS_B, 12)
+    tf_l = load_font(SANS, 11)
+    slot_w = (PAGE_W - 56) // len(DAY_TIMELINE)
+    for i, (label, when) in enumerate(DAY_TIMELINE):
+        cx = 28 + i * slot_w + slot_w // 2
+        cv.text((cx - cv.textlength(when, font=tf_t) / 2, tl_y0 + 20), when,
+                font=tf_t, fill=INK["navy"])
+        label_rows = fit_text(cv, label, tf_l, slot_w - 12)
+        assert len(label_rows) <= 2, \
+            f"timeline label wraps to {len(label_rows)}: {label}"
+        row_y = tl_y0 + 34
+        for row in label_rows:
+            cv.text((cx - cv.textlength(row, font=tf_l) / 2, row_y), row,
+                    font=tf_l, fill=INK["text"])
+            row_y += 12
         # dot on the timeline rule
-        d.ellipse([cx - 3, ty0 - 3, cx + 3, ty0 + 3], fill=GOLD)
-    tl_end = ty0 + 34 + 2 * 12
+        cv.ellipse([cx - 3, tl_y0 - 3, cx + 3, tl_y0 + 3], fill=INK["gold"])
+    tl_end = tl_y0 + 34 + 2 * 12
 
     # ---- markets strip
-    d.line([(28, tl_end + 4), (W - 28, tl_end + 4)], fill=NAVY, width=1)
-    mf = font(F_SANS_B, 13)
-    d.text((28, tl_end + 9), "MARKETS", font=mf, fill=GOLD)
-    mlen = d.textlength(MARKETS, font=font(F_SANS, 14))
-    d.text(((W - mlen) / 2 + 30, tl_end + 9), MARKETS,
-           font=font(F_SANS, 14), fill=NAVY)
+    cv.line([(28, tl_end + 4), (PAGE_W - 28, tl_end + 4)], fill=INK["navy"],
+            width=1)
+    mf = load_font(SANS_B, 13)
+    cv.text((28, tl_end + 9), "MARKETS", font=mf, fill=INK["gold"])
+    mlen = cv.textlength(MARKET_LINE, font=load_font(SANS, 14))
+    cv.text(((PAGE_W - mlen) / 2 + 30, tl_end + 9), MARKET_LINE,
+            font=load_font(SANS, 14), fill=INK["navy"])
 
-    # ---- footer judge note (date check)
-    jf = font(F_SANS_I, 12)
-    jl = wrap(d, JUDGE_NOTE, jf, W - 56)
-    assert len(jl) <= 2, f"judge note wraps to {len(jl)} lines"
+    # ---- footer date-check note
+    jf = load_font(SANS_I, 12)
+    note_rows = fit_text(cv, DATE_NOTE, jf, PAGE_W - 56)
+    assert len(note_rows) <= 2, f"date note wraps to {len(note_rows)} lines"
     fy = tl_end + 26
-    for ln in jl:
-        lw = d.textlength(ln, font=jf)
-        d.text(((W - lw) / 2, fy), ln, font=jf, fill=GREY)
+    for row in note_rows:
+        row_w = cv.textlength(row, font=jf)
+        cv.text(((PAGE_W - row_w) / 2, fy), row, font=jf, fill=INK["grey"])
         fy += 15
-    assert fy <= H - 4, f"footer overflows: ends {fy}"
+    assert fy <= PAGE_H - 4, f"footer overflows: ends {fy}"
 
-    img.save(OUT)
-    print(f"wrote {OUT} {W}x{H}")
+    page.save(OUTFILE)
+    print(f"wrote {OUTFILE} {PAGE_W}x{PAGE_H}")
 
 
 if __name__ == "__main__":
-    main()
+    render()

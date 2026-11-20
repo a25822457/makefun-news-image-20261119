@@ -1,13 +1,15 @@
-"""news-image-20261119 entry, v1 (Python 3.13, standard library only).
+"""Front-page image entry for news-image-20261119.
 
-Writes the v1 front-page image to /output/entry.png. The image is rendered
-offline by render_v1.py and held beside this file; this program only copies
-it, so it needs no network and writes the same bytes on every run.
+This program ships the finished 19 November 2026 front page. The artwork
+is rendered offline ahead of time and stored next to this file as entry.png;
+all this program does is copy that image into the output directory, so it
+never touches the network and produces identical bytes on every run.
 
 Usage:
-    python3 main.py [output-dir]
+    python3 main.py [output-directory]
 
-The output directory defaults to $MAKEFUN_OUTPUT_DIR, else /output.
+With no argument, the output directory comes from the MAKEFUN_OUTPUT_DIR
+environment variable, falling back to /output.
 """
 
 import os
@@ -15,16 +17,21 @@ import shutil
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+SOURCE_DIR = Path(__file__).resolve().parent
+IMAGE_NAME = "entry.png"
+
+
+def resolve_output_dir(argv):
+    """Pick the output directory from argv, the environment, or the default."""
+    if len(argv) > 1:
+        return Path(argv[1])
+    return Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
 
 
 def main(argv):
-    if len(argv) > 1:
-        out_dir = Path(argv[1])
-    else:
-        out_dir = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(HERE / "entry.png", out_dir / "entry.png")
+    target_dir = resolve_output_dir(argv)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(SOURCE_DIR / IMAGE_NAME, target_dir / IMAGE_NAME)
 
 
 if __name__ == "__main__":
